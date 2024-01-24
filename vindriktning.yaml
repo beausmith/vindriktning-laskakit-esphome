@@ -1,0 +1,308 @@
+substitutions:
+  ambient_light_measurement_interval: "5min"
+  ambient_light_voltage_update_interval: "5s"
+  brightness_calculation_update_interval: "2.5s" # less than ambient_light_voltage_update_interval
+  ambient_light_voltage_measurement_dark: "3.15" # measurement in dark when all LEDs are off
+  ambient_light_voltage_measurement_bright: "0.1" # measurement in sunlight when all LEDs are off
+  led_brightness_max: "1.00"  # decimal percentage
+  led_brightness_min: "0.16" # lowest decimal percentage brightness supported by LaskaKit ESP-VINDRIKTNING LEDs.
+
+esphome:
+  name: vindriktning-air-quality
+  friendly_name: "Vindriktning Air Quality"
+  comment: Ikea Vindriktning + LaskaKit ESP-VINDRIKTNING ESP-32 + LaskaKit SCD41
+
+esp32:
+  board: nodemcu-32s
+  framework:
+    type: arduino
+
+logger:
+  level: WARN # dev_mode ? DEBUG : WARN
+  logs:
+    component: ERROR # https://github.com/esphome/issues/issues/4717
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  ap:
+    ssid: "vindriktning-air-quality"
+    password: "faJEEgoVjqmn"
+
+captive_portal:
+
+globals:
+  - id: led_brightness
+    type: float
+    restore_value: yes
+    initial_value: '0.16'
+  - id: issue_humidity
+    type: bool
+    initial_value: 'false'
+  - id: issue_co2
+    type: bool
+    initial_value: 'false'
+  - id: issue_pm
+    type: bool
+    initial_value: 'false'
+
+script:
+  - id: set_light_color_humidity
+    then:
+      - logger.log:
+          format: "set_light_color_humidity called. Humidity is %.1f."
+          args: [ 'id(humidity).state' ]
+      - lambda: |-
+          auto call = id(status_led_top).turn_on();
+          call.set_brightness(id(led_brightness));
+          if (id(humidity).state < 30) {
+            call.set_rgb(1.0,0.0,0.0); // red
+            id(issue_humidity) = true;
+          } else if (id(humidity).state >= 60) {
+            call.set_rgb(0.0,0.0,1.0); // blue
+            id(issue_humidity) = true;
+          } else {
+            call.set_rgb(0.0,1.0,0.0); // green
+            id(issue_humidity) = false;
+          };
+          call.perform();
+  - id: set_light_color_co2
+    then:
+      - logger.log:
+          format: "set_light_color_co2 called. co2 is %.1f."
+          args: [ 'id(co2).state' ]
+      - lambda: |-
+          auto call = id(status_led_middle).turn_on();
+          call.set_brightness(id(led_brightness));
+          if (id(co2).state < 1000) {
+            call.set_rgb(0.0,1.0,0.0); // green
+            id(issue_co2) = false;
+          } else if (id(co2).state >= 1500) {
+            call.set_rgb(1.0,0.0,0.0); // red
+            id(issue_co2) = true;
+          } else {
+            call.set_rgb(1.0,0.72,0.0); // yellow
+            id(issue_co2) = true;
+          };
+          call.perform();
+  - id: set_light_color_pm
+    then:
+      - logger.log:
+          format: "set_light_color_pm called. pm is %.1f."
+          args: [ 'id(pm).state' ]
+      - lambda: |-
+          auto call = id(status_led_bottom).turn_on();
+          call.set_brightness(id(led_brightness));
+          if (id(pm).state < 30) {
+            call.set_rgb(0.0,1.0,0.0); // green
+            id(issue_pm) = false;
+          } else if (id(pm).state >= 90) {
+            call.set_rgb(1.0,0.0,0.0); // red
+            id(issue_pm) = true;
+          } else {
+            call.set_rgb(1.0,0.72,0.0); // yellow
+            id(issue_pm) = true;
+          };
+          call.perform();
+
+interval:
+  # Check for issues frequently and run fan until there are no issues.
+  - interval: ${ambient_light_measurement_interval}
+    then:
+      - logger.log: "============ ADJUSTING LED BRIGHTNESS ============"
+      - light.turn_off:
+          id: status_leds
+          transition_length: 3s
+      - delay: ${ambient_light_voltage_update_interval}
+      - lambda: |-
+          id(led_brightness) = id(led_brightness_level).state;
+      - logger.log:
+          format: "led_brightness updated to %.1f (%.1f)."
+          args: [ 'id(led_brightness)', 'id(led_brightness_level).state' ]
+      - script.execute: set_light_color_humidity
+      - script.execute: set_light_color_co2
+      - script.execute: set_light_color_pm
+  # Check for issues frequently and run fan until there are no issues.
+  - interval: 1min
+    then:
+      - if:
+          condition:
+            or:
+              - lambda: 'return id(issue_humidity);'
+              - lambda: 'return id(issue_co2);'
+              - lambda: 'return id(issue_pm);'
+          then:
+            - logger.log: "================= THERE IS AN ISSUE ================"
+            - logger.log:
+                format: "issue_humidity %d - issue_co2 %d - issue_pm %d"
+                args: [ 'id(issue_humidity)', 'id(issue_co2)', 'id(issue_pm)' ]
+            - fan.turn_on: device_fan
+          else:
+            - logger.log: "================= NO ISSUES ================"
+            - fan.turn_off: device_fan
+    
+# Run fan regularly to ensure that sensors get measurements from moving air.
+# Run every quarter hour if no issues
+time:
+  - platform: homeassistant
+    on_time:
+      - seconds: 0
+        minutes: /15
+        then:
+          - if:
+              condition:
+                or:
+                  - lambda: 'return id(issue_humidity);'
+                  - lambda: 'return id(issue_co2);'
+                  - lambda: 'return id(issue_pm);'
+              then:
+                - logger.log: "Skip regular fan as there is an issue"
+              else:
+                - logger.log: "================= REGULAR FAN ON ================"
+                - fan.turn_on: device_fan
+                - delay: 1min
+                - fan.turn_off: device_fan
+
+uart:
+  rx_pin: 16
+  tx_pin: 17
+  baud_rate: 9600
+  id: universal_async_rx_tx
+
+sensor:
+  - platform: pm1006
+    uart_id: universal_async_rx_tx
+    update_interval: 30s
+    pm_2_5:
+      name: PM 2.5
+      id: pm
+      accuracy_decimals: 1
+      filters:
+        - sliding_window_moving_average:
+            window_size: 50
+            send_every: 10
+      on_value:
+        script.execute: set_light_color_pm
+  - platform: scd4x
+    update_interval: 30s
+    temperature:
+      name: Temperature
+    co2:
+      name: CO²
+      id: co2
+      on_value:
+        script.execute: set_light_color_co2
+    humidity:
+      name: Humidity
+      id: humidity
+      on_value:
+        script.execute: set_light_color_humidity
+  - platform: adc
+    pin: 33
+    id: ambient_light_voltage
+    name: Ambient Light Voltage
+    attenuation: auto
+    update_interval: ${ambient_light_voltage_update_interval}
+    entity_category: diagnostic
+    disabled_by_default: true
+  - platform: template
+    id: brightness_percentage
+    name: Brightness
+    icon: mdi:brightness-percent
+    entity_category: diagnostic
+    unit_of_measurement: "%"
+    update_interval: ${brightness_calculation_update_interval}
+    accuracy_decimals: 0
+    lambda: return id(ambient_light_voltage).state;
+    filters:
+      - calibrate_linear:
+          datapoints:
+            - ${ambient_light_voltage_measurement_dark} -> 0
+            - ${ambient_light_voltage_measurement_bright} -> 100
+      - clamp:
+          min_value: 0
+          max_value: 100
+  - platform: template
+    id: led_brightness_level
+    name: LED Brightness Level
+    icon: mdi:brightness-percent
+    entity_category: diagnostic
+    update_interval: ${brightness_calculation_update_interval}
+    accuracy_decimals: 2
+    lambda: return id(ambient_light_voltage).state;
+    filters:
+      - calibrate_linear:
+          datapoints:
+            - ${ambient_light_voltage_measurement_dark} -> ${led_brightness_min}
+            - ${ambient_light_voltage_measurement_bright} -> ${led_brightness_max}
+      - clamp:
+          min_value: ${led_brightness_min}
+          max_value: ${led_brightness_max}
+  - platform: wifi_signal
+    name: WiFi Signal
+    entity_category: diagnostic
+    disabled_by_default: true
+    update_interval: 60s
+
+output:
+  - platform: gpio
+    id: fan_output
+    pin: 12
+
+fan:
+  - platform: binary
+    output: fan_output
+    name: Fan
+    id: device_fan
+  
+light:
+  - platform: neopixelbus
+    type: GRB
+    variant: WS2812
+    pin: GPIO25
+    num_leds: 3
+    id: status_leds
+    restore_mode: ALWAYS_ON
+    method:
+      type: esp32_rmt
+      channel: 6
+  - platform: partition
+    name: Status LED Top
+    id: status_led_top
+    segments:
+      - id: status_leds
+        from: 2
+        to: 2
+  - platform: partition
+    name: Status LED Middle
+    id: status_led_middle
+    segments:
+      - id: status_leds
+        from: 1
+        to: 1
+  - platform: partition
+    name: Status LED Bottom
+    id: status_led_bottom
+    segments:
+      - id: status_leds
+        from: 0
+        to: 0
+
+i2c:
+  sda: 21
+  scl: 22
+  scan: true
+  id: bus_a
+
+button:
+  - platform: restart
+    name: Restart
+    disabled_by_default: true
+    entity_category: diagnostic
