@@ -1,16 +1,23 @@
 substitutions:
-  ambient_light_measurement_interval: "5min"
-  ambient_light_voltage_update_interval: "5s"
-  brightness_calculation_update_interval: "2.5s" # less than ambient_light_voltage_update_interval
+
+  # Configuration
+  device_name: "vindriktning-air-quality" # Rename to "{location}-air-quality"
+  device_friendly_name: "Vindriktning Air Quality" # Rename to "{Location} Air Quality"
+
+  # Optional Configuration
+  device_comment: Ikea Vindriktning + LaskaKit ESP-VINDRIKTNING ESP-32 + LaskaKit SCD41
+  ambient_light_measurement_interval: "5min" # How often to turn off LEDs to measure ambient light?
+  ambient_light_voltage_update_interval: "5s" # How long to turn off LEDs in order to measure ambient light?
+  brightness_calculation_update_interval: "2.5s" # Set this to half of the $ambient_light_voltage_update_interval value.
   ambient_light_voltage_measurement_dark: "3.15" # measurement in dark when all LEDs are off
   ambient_light_voltage_measurement_bright: "0.1" # measurement in sunlight when all LEDs are off
   led_brightness_max: "1.00"  # decimal percentage
   led_brightness_min: "0.16" # lowest decimal percentage brightness supported by LaskaKit ESP-VINDRIKTNING LEDs.
 
 esphome:
-  name: vindriktning-air-quality
-  friendly_name: "Vindriktning Air Quality"
-  comment: Ikea Vindriktning + LaskaKit ESP-VINDRIKTNING ESP-32 + LaskaKit SCD41
+  name: $device_name
+  friendly_name: $device_friendly_name
+  comment: $device_comment
 
 esp32:
   board: nodemcu-32s
@@ -33,8 +40,8 @@ wifi:
   password: !secret wifi_password
 
   ap:
-    ssid: "vindriktning-air-quality"
-    password: "faJEEgoVjqmn"
+    ssid: $device_name
+    password: !secret wifi_ap_password
 
 captive_portal:
 
@@ -114,13 +121,13 @@ script:
 
 interval:
   # Check for issues frequently and run fan until there are no issues.
-  - interval: ${ambient_light_measurement_interval}
+  - interval: $ambient_light_measurement_interval
     then:
       - logger.log: "============ ADJUSTING LED BRIGHTNESS ============"
       - light.turn_off:
           id: status_leds
           transition_length: 3s
-      - delay: ${ambient_light_voltage_update_interval}
+      - delay: $ambient_light_voltage_update_interval
       - lambda: |-
           id(led_brightness) = id(led_brightness_level).state;
       - logger.log:
@@ -209,7 +216,7 @@ sensor:
     id: ambient_light_voltage
     name: Ambient Light Voltage
     attenuation: auto
-    update_interval: ${ambient_light_voltage_update_interval}
+    update_interval: $ambient_light_voltage_update_interval
     entity_category: diagnostic
     disabled_by_default: true
   - platform: template
@@ -218,14 +225,14 @@ sensor:
     icon: mdi:brightness-percent
     entity_category: diagnostic
     unit_of_measurement: "%"
-    update_interval: ${brightness_calculation_update_interval}
+    update_interval: $brightness_calculation_update_interval
     accuracy_decimals: 0
     lambda: return id(ambient_light_voltage).state;
     filters:
       - calibrate_linear:
           datapoints:
-            - ${ambient_light_voltage_measurement_dark} -> 0
-            - ${ambient_light_voltage_measurement_bright} -> 100
+            - $ambient_light_voltage_measurement_dark -> 0
+            - $ambient_light_voltage_measurement_bright -> 100
       - clamp:
           min_value: 0
           max_value: 100
@@ -234,17 +241,18 @@ sensor:
     name: LED Brightness Level
     icon: mdi:brightness-percent
     entity_category: diagnostic
-    update_interval: ${brightness_calculation_update_interval}
+    disabled_by_default: true
+    update_interval: $brightness_calculation_update_interval
     accuracy_decimals: 2
     lambda: return id(ambient_light_voltage).state;
     filters:
       - calibrate_linear:
           datapoints:
-            - ${ambient_light_voltage_measurement_dark} -> ${led_brightness_min}
-            - ${ambient_light_voltage_measurement_bright} -> ${led_brightness_max}
+            - $ambient_light_voltage_measurement_dark -> $led_brightness_min
+            - $ambient_light_voltage_measurement_bright -> $led_brightness_max
       - clamp:
-          min_value: ${led_brightness_min}
-          max_value: ${led_brightness_max}
+          min_value: $led_brightness_min
+          max_value: $led_brightness_max
   - platform: wifi_signal
     name: WiFi Signal
     entity_category: diagnostic
