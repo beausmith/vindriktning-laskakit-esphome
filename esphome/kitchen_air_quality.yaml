@@ -1,0 +1,8 @@
+# This is a sample configuration including the vindriktning config as a package and setting substitutions specific to the "Kitchen" device. This allows managment of multiple vindriktning devices with a shared configuration.
+
+substitutions:
+  device_name: "kitchen-air-quality"
+  device_friendly_name: "Kitchen Air Quality"
+
+packages:
+  vindriktning: !include packages/vindriktning.yaml
